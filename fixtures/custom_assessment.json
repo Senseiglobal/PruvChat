@@ -1,0 +1,1 @@
+{"label": "SYNTHETIC DEMO — fictional launch-readiness check", "mode": "custom", "objective": "Verify launch readiness claims before announcement.", "claims": ["The beta test finished without critical bugs.", "All users recommend the product."], "evidence": [{"id": "c1", "text": "Beta test finished with zero critical bugs reported."}]}

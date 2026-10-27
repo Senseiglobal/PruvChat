@@ -1,0 +1,5 @@
+streamlit>=1.32
+pydantic>=2
+pypdf>=5
+python-docx>=1.1
+pytest>=8

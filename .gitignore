@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.pruvchat_runs/
+.streamlit/secrets.toml
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.temp
+*~
+# Local tooling / alternate VCS metadata (never part of the public repo)
+.agents/
+.muse/
+.hg/
+.sl/
+.eden/
