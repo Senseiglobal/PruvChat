@@ -1,4 +1,8 @@
-# PruvChat — Phase 2 Evidence Workspace (Mock Verdicts)
+# PruvChat
+
+Meta AI-powered multipurpose evidence assessment and verification platform.
+
+## Phase 2 Evidence Workspace (Mock Verdicts)
 
 Working prototype. Assessments run through a deterministic mock pipeline plus a mock
 Meta provider — no live API calls without explicit approval, no secrets logged.
