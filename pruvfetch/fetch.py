@@ -44,24 +44,64 @@ class _TextExtractor(HTMLParser):
         super().__init__()
         self._skip = 0
         self.parts: list = []
+        self.title_parts: list = []
+        self._in_title = False
+        self.meta_dates: dict = {}
 
     def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style", "noscript"):
+        if tag in ("script", "style", "noscript", "nav", "header", "footer", "aside"):
             self._skip += 1
+        if tag == "title":
+            self._in_title = True
+        if tag == "meta":
+            info = {str(k or "").lower(): str(v or "") for k, v in attrs}
+            key = (info.get("property") or info.get("name") or "").lower()
+            if key and info.get("content"):
+                self.meta_dates.setdefault(key, info["content"][:200])
+        if tag == "time":
+            info = {str(k or "").lower(): str(v or "") for k, v in attrs}
+            if info.get("datetime"):
+                self.meta_dates.setdefault("time-datetime", info["datetime"][:200])
 
     def handle_endtag(self, tag):
-        if tag in ("script", "style", "noscript") and self._skip:
+        if tag in ("script", "style", "noscript", "nav", "header", "footer", "aside") and self._skip:
             self._skip -= 1
+        if tag == "title":
+            self._in_title = False
 
     def handle_data(self, data):
         if not self._skip and data.strip():
             self.parts.append(data.strip())
+        if self._in_title and data.strip():
+            self.title_parts.append(data.strip())
 
 
 def html_to_text(html: str) -> str:
     parser = _TextExtractor()
     parser.feed(html[:FETCH_MAX_BYTES])
     return "\n".join(parser.parts)
+
+
+_PUBLISHED_KEYS = ("article:published_time", "publication_date", "dc.date.issued", "date",
+                   "article:modified_time", "og:updated_time", "dc.date.modified",
+                   "lastmod", "time-datetime")
+
+
+def page_meta(html: str) -> dict:
+    """Title plus published or updated date from raw HTML. Pure function.
+
+    Only dates actually present in meta or time tags are returned. Absent
+    values stay empty so callers can show them as not available.
+    """
+    parser = _TextExtractor()
+    parser.feed((html or "")[:FETCH_MAX_BYTES])
+    title = " ".join(parser.title_parts).strip()[:200]
+    published = ""
+    for key in _PUBLISHED_KEYS:
+        if parser.meta_dates.get(key):
+            published = parser.meta_dates[key]
+            break
+    return {"title": title, "published": published}
 
 
 @dataclass(frozen=True)
@@ -75,6 +115,8 @@ class FetchedDoc:
     truncated: bool = False
     fetched_at: str = ""
     warning: str = ""
+    title: str = ""
+    published: str = ""
 
 
 def _fail(url: str, warning: str) -> FetchedDoc:
@@ -165,9 +207,12 @@ def fetch_url(url: str, timeout: int = FETCH_TIMEOUT) -> FetchedDoc:
             data = data[:FETCH_MAX_BYTES]
             stamp = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
             if ctype == "text/html":
-                text = html_to_text(data.decode("utf-8", errors="replace"))
+                raw_html = data.decode("utf-8", errors="replace")
+                meta = page_meta(raw_html)
                 return FetchedDoc(url=url, final_url=current, status=status, content_type=ctype,
-                                  text=text, size_bytes=len(data), truncated=truncated, fetched_at=stamp)
+                                  text=html_to_text(raw_html), size_bytes=len(data),
+                                  truncated=truncated, fetched_at=stamp,
+                                  title=meta["title"], published=meta["published"])
             if ctype in TEXT_TYPES or ctype.startswith("text/"):
                 return FetchedDoc(url=url, final_url=current, status=status, content_type=ctype,
                                   text=data.decode("utf-8", errors="replace"), size_bytes=len(data),

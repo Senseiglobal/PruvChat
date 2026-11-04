@@ -10,6 +10,8 @@ import json as _json
 import os as _os
 import re as _re
 
+from pruvcore.schemas import Assessment, Claim, EvidenceRef, Verdict
+
 RUNS_DIRNAME = ".pruvchat_runs"
 MAX_RUNS = 20
 MAX_RUN_BYTES = 1_000_000
@@ -58,10 +60,13 @@ def _prune(runs_dir: str) -> None:
 
 
 def save_run(directory: str, name: str, mode: str, inputs: dict,
-             cards: list, summary: dict) -> str:
+             cards: list, summary: dict, engine: str = "mock",
+             provider: str = "mock", model: str = "") -> str:
     """Save one assessment run; returns the file path. Raises on oversize."""
     runs_dir = _runs_dir(directory)
     payload = {"saved_at": _stamp(), "name": sanitize_name(name) or "run", "mode": mode,
+               "engine": str(engine or "mock"), "provider": str(provider or "mock"),
+               "model": str(model or ""),
                "inputs": _scrub(dict(inputs or {})), "cards": _scrub(list(cards or [])),
                "summary": _scrub(dict(summary or {}))}
     raw = _json.dumps(payload, ensure_ascii=False, indent=1)
@@ -104,9 +109,83 @@ def load_run(directory: str, fname: str) -> dict:
         raise FileNotFoundError(f"no such run: {fname}")
     with open(path, encoding="utf-8") as fh:
         data = _json.load(fh)
-    if not isinstance(data, dict) or "cards" not in data:
+    if not isinstance(data, dict):
         raise ValueError("corrupt run file")
+    if not isinstance(data.get("inputs"), dict):
+        raise ValueError("corrupt run file: inputs missing")
+    data.setdefault("cards", [])  # absent cards = legacy inputs-only file
+    if not isinstance(data["cards"], list):
+        raise ValueError("corrupt run file: cards malformed")
     return data
+
+
+def restore_workspace(data: dict) -> dict:
+    """Validate saved JSON and rebuild render-ready objects. Never fabricates.
+
+    Returns {"mode", "inputs", "assessments", "evidence", "engine", "provider",
+    "model", "saved_at", "legacy"}. Files without cards restore inputs-only
+    (legacy=True). Anything malformed raises ValueError for graceful handling.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("inputs"), dict):
+        raise ValueError("corrupt run file: inputs missing")
+    inputs = data["inputs"]
+    for key, val in inputs.items():
+        if not isinstance(val, str):
+            raise ValueError(f"corrupt run file: inputs[{key!r}] is not text")
+    base = {"mode": data.get("mode", "?"), "inputs": dict(inputs),
+            "engine": str(data.get("engine") or "mock"),
+            "provider": str(data.get("provider") or "mock"),
+            "model": str(data.get("model") or ""),
+            "saved_at": str(data.get("saved_at") or "?")}
+    cards = data.get("cards") or []
+    if not cards:
+        return {**base, "assessments": [], "evidence": [], "legacy": True}
+    assessments: list = []
+    evidence: list = []
+    seen_evidence: set = set()
+    for pos, card in enumerate(cards):
+        assessments.append(_restore_assessment(card, pos))
+        for cite in card["citations"]:
+            if cite["id"] not in seen_evidence:
+                seen_evidence.add(cite["id"])
+                evidence.append(EvidenceRef(id=cite["id"], text=cite.get("excerpt", ""),
+                                            source=cite.get("source", "") or "saved",
+                                            locator=cite.get("locator", "") or ""))
+    return {**base, "assessments": assessments, "evidence": evidence, "legacy": False}
+
+
+def _restore_assessment(card: dict, pos: int):
+    """Rebuild one Assessment from a saved card dict. Strict, no invention."""
+    if not isinstance(card, dict):
+        raise ValueError(f"corrupt run file: card {pos} is not an object")
+    for field in ("claim", "claim_id", "status", "rationale"):
+        if not isinstance(card.get(field), str):
+            raise ValueError(f"corrupt run file: card {pos} field {field!r} invalid")
+    try:
+        verdict = Verdict(card["status"])
+    except ValueError:
+        raise ValueError(f"corrupt run file: card {pos} has unknown status") from None
+    score = card.get("score", 0)
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        raise ValueError(f"corrupt run file: card {pos} score invalid")
+    for field in ("evidence_ids", "citations", "contradicted_by"):
+        if not isinstance(card.get(field), list):
+            raise ValueError(f"corrupt run file: card {pos} field {field!r} invalid")
+    for cite in card["citations"]:
+        if not isinstance(cite, dict) or not isinstance(cite.get("id"), str):
+            raise ValueError(f"corrupt run file: card {pos} has a bad citation")
+        for key in ("source", "locator", "excerpt"):
+            if not isinstance(cite.get(key, ""), str):
+                raise ValueError(f"corrupt run file: card {pos} citation {key!r} invalid")
+    uncertainty = str(card.get("uncertainty", "medium")).lower()
+    if uncertainty not in ("low", "medium", "high"):
+        raise ValueError(f"corrupt run file: card {pos} uncertainty invalid")
+    return Assessment(claim=Claim(id=card["claim_id"], text=card["claim"]),
+                      verdict=verdict, score=float(score), rationale=card["rationale"],
+                      evidence_ids=tuple(e for e in card["evidence_ids"] if isinstance(e, str)),
+                      uncertainty=uncertainty,
+                      contradicted_by=tuple(e for e in card["contradicted_by"] if isinstance(e, str)),
+                      method=str(card.get("method", "")))
 
 
 def delete_run(directory: str, fname: str) -> bool:
@@ -123,8 +202,10 @@ def delete_run(directory: str, fname: str) -> bool:
 
 def export_report(data: dict) -> str:
     """Render a saved run as a Markdown report."""
-    lines = [f"# PruvChat report — {data.get('name', '?')} (mock, offline)",
+    lines = [f"# PruvChat report: {data.get('name', '?')}",
              f"- Mode: {data.get('mode', '?')}  |  Saved: {data.get('saved_at', '?')}",
+             f"- Engine: {data.get('engine', 'mock')}  |  Provider: {data.get('provider', 'mock')}"
+             + (f" ({data.get('model')})" if data.get("model") else ""),
              ""]
     summary = data.get("summary") or {}
     lines.append(f"Summary: {summary.get('supported', 0)} supported / "
@@ -133,9 +214,15 @@ def export_report(data: dict) -> str:
                  f"({summary.get('total', 0)} total)")
     lines.append("")
     for card in data.get("cards") or []:
+        method = str(card.get("method") or "")
+        if method.startswith("live fallback"):
+            basis = "live fallback, UNVERIFIED, not a verdict"
+        elif method.startswith("live"):
+            basis = "live Meta API verdict, no overlap score"
+        else:
+            basis = f"heuristic overlap {card.get('score', '?')}"
         lines.append(f"## {card.get('title', '?')}")
-        lines.append(f"- Status: **{card.get('status', '?')}** "
-                     f"(heuristic overlap {card.get('score', '?')})")
+        lines.append(f"- Status: **{card.get('status', '?')}** ({basis})")
         lines.append(f"- Method: {card.get('method', 'mock heuristic')}")
         lines.append(f"- Claim: {card.get('claim', '?')}")
         lines.append(f"- Rationale: {card.get('rationale', '?')}")

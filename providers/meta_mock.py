@@ -15,9 +15,13 @@ class MockMetaProvider:
         self.calls.append(text)
         low = text.lower()
         if not low:
-            return {"verdict": "unsupported", "rationale": "Empty prompt; nothing to assess.", "model": self.model}
+            return {"verdict": "unsupported", "rationale": "The prompt is empty, so there is nothing to assess.",
+                    "model": self.model}
         if "contradict" in low or "dispute" in low or "conflict" in low:
-            return {"verdict": "contested", "rationale": "Mock: prompt signals disagreement.", "model": self.model}
+            return {"verdict": "contested", "rationale": "The words suggest the sides disagree.",
+                    "model": self.model}
         if "verify" in low or "confirm" in low or "evidence" in low:
-            return {"verdict": "supported", "rationale": "Mock: prompt cites supporting evidence.", "model": self.model}
-        return {"verdict": "unsupported", "rationale": "Mock: no supporting signal in prompt.", "model": self.model}
+            return {"verdict": "supported", "rationale": "The words point to supporting evidence.",
+                    "model": self.model}
+        return {"verdict": "unsupported", "rationale": "The words give no clear signal.",
+                "model": self.model}

@@ -59,6 +59,22 @@ def _verdict(score: float) -> Verdict:
     return Verdict.UNSUPPORTED
 
 
+def rank_by_overlap(query: str, texts: list) -> list:
+    """Order indexes by keyword overlap with the query (desc), ties by index.
+
+    Pure ranking for context budgeting: highest query coverage first, stable
+    original order on ties. Returns original indexes, highest-ranked first.
+    """
+    q = _tokens(query or "")
+    scored = []
+    for i, text in enumerate(texts or []):
+        toks = _tokens(text or "")
+        overlap = len(q & toks) / len(q) if q and toks else 0.0
+        scored.append((overlap, i))
+    scored.sort(key=lambda s: (-s[0], s[1]))
+    return [i for _, i in scored]
+
+
 def assess(claims: list, evidence: list) -> list:
     """Assess each claim against evidence. Pure function."""
     out: list = []
@@ -66,11 +82,11 @@ def assess(claims: list, evidence: list) -> list:
         score, matched = score_claim(claim, evidence)
         verdict = _verdict(score)
         if verdict is Verdict.SUPPORTED:
-            rationale = f"{len(matched)} evidence ref(s) share >=50% of claim keywords."
+            rationale = "Evidence matches most key words."
         elif verdict is Verdict.CONTESTED:
-            rationale = "Partial keyword overlap; needs human review."
+            rationale = "Only some key words match. A person should review this."
         else:
-            rationale = "No meaningful keyword overlap with supplied evidence."
+            rationale = "No evidence lines share enough key words with this claim."
         out.append(
             Assessment(
                 claim=claim,
@@ -91,6 +107,25 @@ def uncertainty_for(verdict: Verdict, contradicted: bool) -> str:
     if verdict is Verdict.CONTESTED or contradicted:
         return "medium"
     return "low"
+
+
+def fallback_unverified(claims: list, reason: str,
+                        method: str = "live fallback: unverified (not a live judgment)") -> list:
+    """Deterministic fallback when a live verdict cannot be produced.
+
+    Returns one UNSUPPORTED, zero-citation assessment per claim. The
+    rationale names the missing provenance; the method forbids reading the
+    finding as a verified live judgment or as proof of falsehood. Pure.
+    """
+    why = (reason or "provenance unavailable").strip().rstrip(".")
+    return [
+        Assessment(
+            claim=claim, verdict=Verdict.UNSUPPORTED, score=0.0,
+            rationale=f"UNVERIFIED. {why}. No live verdict was produced.",
+            evidence_ids=(), uncertainty="high", method=method,
+        )
+        for claim in (claims or [])
+    ]
 
 
 def find_contradictions(evidence: list) -> list:

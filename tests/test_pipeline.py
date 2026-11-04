@@ -1,5 +1,5 @@
 """Core assessment workflow: claims, scoring, verdicts, citation integrity."""
-from pruvcore.pipeline import assess, extract_claims, score_claim
+from pruvcore.pipeline import assess, extract_claims, fallback_unverified, score_claim
 from pruvcore.schemas import Claim, EvidenceRef, Verdict
 
 
@@ -66,3 +66,26 @@ def test_contradictory_evidence_flips_verdict():
     seller = [EvidenceRef(id="b1", text="Order 1042 passed warehouse inspection before shipping")]
     assert assess([claim], buyer)[0].verdict is Verdict.SUPPORTED
     assert assess([claim], seller)[0].verdict is Verdict.CONTESTED
+
+
+def test_fallback_unverified_shape_and_wording():
+    (only,) = fallback_unverified([Claim(id="c1", text="Alpha beta")], "no evidence supplied.")
+    assert only.verdict is Verdict.UNSUPPORTED and only.score == 0.0
+    assert only.evidence_ids == () and only.uncertainty == "high"
+    assert only.rationale.startswith("UNVERIFIED") and "no evidence supplied" in only.rationale
+    assert "live fallback: unverified" in only.method
+    assert fallback_unverified([], "reason") == []
+    again = fallback_unverified([Claim(id="c1", text="Alpha beta")], "no evidence supplied.")
+    assert again == [only]  # deterministic
+
+
+def test_fallback_unverified_never_runs_keyword_scoring():
+    # The mock pipeline would call this SUPPORTED; the fallback must not,
+    # and must carry the caller-supplied provenance method.
+    (mocked,) = assess([Claim(id="c1", text="Alpha beta")],
+                       [EvidenceRef(id="e1", text="Alpha beta gamma")])
+    assert mocked.verdict is Verdict.SUPPORTED
+    (fb,) = fallback_unverified([Claim(id="c1", text="Alpha beta")], "no live call made.",
+                                method="live fallback: unverified (inputs incomplete)")
+    assert fb.verdict is Verdict.UNSUPPORTED and fb.score == 0.0
+    assert fb.method == "live fallback: unverified (inputs incomplete)"
